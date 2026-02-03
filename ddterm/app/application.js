@@ -333,7 +333,7 @@ class Application extends Gtk.Application {
             dbus_connection: this.get_dbus_connection(),
         });
 
-        this.connect('shutdown', () => this.display_config.unwatch());
+        this.connect('shutdown', () => this.display_config?.unwatch());
         this.display_config.update_sync();
 
         this.simple_action('toggle', () => this.ensure_window_with_terminal().toggle());
@@ -365,8 +365,8 @@ class Application extends Gtk.Application {
             'shortcut-next-tab': 'notebook.next-tab',
             'shortcut-move-tab-prev': 'page.move-prev',
             'shortcut-move-tab-next': 'page.move-next',
-            'shortcut-split-horizontal': 'page.split-layout("horizontal-split")',
-            'shortcut-split-vertical': 'page.split-layout("vertical-split")',
+            'shortcut-split-horizontal': 'page.split-horizontal',
+            'shortcut-split-vertical': 'page.split-vertical',
             'shortcut-move-tab-to-other-pane': 'page.move-to-other-pane',
             'shortcut-split-position-inc': 'win.split-position-inc',
             'shortcut-split-position-dec': 'win.split-position-dec',

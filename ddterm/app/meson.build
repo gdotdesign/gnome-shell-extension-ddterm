@@ -13,6 +13,8 @@ app_js_src_files = files(
   'notebook.js',
   'pcre2.js',
   'search.js',
+  'splitcontainer.js',
+  'tabcontainer.js',
   'tablabel.js',
   'tcgetpgrp.js',
   'terminal.js',

@@ -12,6 +12,7 @@ import Pango from 'gi://Pango';
 import Gettext from 'gettext';
 
 import { TerminalPage } from './terminalpage.js';
+import { TabContentContainer } from './tabcontainer.js';
 import { TerminalSettings } from './terminalsettings.js';
 
 export const Notebook = GObject.registerClass({
@@ -110,21 +111,8 @@ export const Notebook = GObject.registerClass({
             GObject.ParamFlags.READWRITE | GObject.ParamFlags.EXPLICIT_NOTIFY,
             true
         ),
-        'split-layout': GObject.ParamSpec.string(
-            'split-layout',
-            null,
-            null,
-            GObject.ParamFlags.READWRITE | GObject.ParamFlags.EXPLICIT_NOTIFY,
-            'no-split'
-        ),
     },
     Signals: {
-        'split-layout': {
-            param_types: [TerminalPage, String],
-        },
-        'move-to-other-pane': {
-            param_types: [TerminalPage],
-        },
         'session-update': {},
     },
 }, class DDTermNotebook extends Gtk.Notebook {
@@ -151,7 +139,6 @@ export const Notebook = GObject.registerClass({
 
         const menu = new Gio.Menu();
         menu.append_section(null, new NotebookMenu({ notebook: this }));
-        menu.append_section(null, this.menus.get_object('notebook-layout'));
 
         this.tab_switch_button = new Gtk.MenuButton({
             menu_model: menu,
@@ -230,24 +217,6 @@ export const Notebook = GObject.registerClass({
         });
         this.actions.add_action(this.tab_select_action);
 
-        const split_layout_action = new Gio.SimpleAction({
-            name: 'split-layout',
-            parameter_type: new GLib.VariantType('s'),
-            state: GLib.Variant.new_string(this.split_layout),
-        });
-        this.connect('notify::split-layout', () => {
-            split_layout_action.state = GLib.Variant.new_string(this.split_layout);
-        });
-        split_layout_action.connect('change-state', (_, value) => {
-            this.emit('split-layout', this.current_child, value.unpack());
-        });
-        split_layout_action.set_state_hint(new GLib.Variant('as', [
-            'no-split',
-            'horizontal-split',
-            'vertical-split',
-        ]));
-        this.actions.add_action(split_layout_action);
-
         this.connect('page-added', this.update_tabs_visible.bind(this));
         this.connect('page-removed', this.update_tabs_visible.bind(this));
 
@@ -304,30 +273,6 @@ export const Notebook = GObject.registerClass({
         this.child_set_property(child, 'tab-expand', this.tab_expand);
 
         const handlers = [
-            child.connect('new-tab-before-request', () => {
-                this.new_page(this.page_num(child)).spawn();
-            }),
-            child.connect('new-tab-after-request', () => {
-                this.new_page(this.page_num(child) + 1).spawn();
-            }),
-            child.connect('move-prev-request', () => {
-                const current = this.page_num(child);
-                const n_pages = this.get_n_pages();
-
-                this.reorder_child(child, (n_pages + current - 1) % n_pages);
-            }),
-            child.connect('move-next-request', () => {
-                const current = this.page_num(child);
-                const n_pages = this.get_n_pages();
-
-                this.reorder_child(child, (current + 1) % n_pages);
-            }),
-            child.connect('split-layout-request', (_, param) => {
-                this.emit('split-layout', child, param);
-            }),
-            child.connect('move-to-other-pane-request', () => {
-                this.emit('move-to-other-pane', child);
-            }),
             child.connect('session-update', () => {
                 this.emit('session-update');
             }),
@@ -360,12 +305,6 @@ export const Notebook = GObject.registerClass({
                 'show-shortcut',
                 GObject.BindingFlags.SYNC_CREATE
             ),
-            this.bind_property(
-                'split-layout',
-                child,
-                'split-layout',
-                GObject.BindingFlags.SYNC_CREATE
-            ),
         ];
 
         this.page_disconnect.set(child, () => {
@@ -389,6 +328,9 @@ export const Notebook = GObject.registerClass({
             disconnect();
 
         this.update_tab_switch_actions();
+
+        if (this.get_n_pages() > 0)
+            this.grab_focus();
     }
 
     on_page_reordered(_child, _page_num) {
@@ -400,6 +342,11 @@ export const Notebook = GObject.registerClass({
     }
 
     new_page(position = -1, properties = {}) {
+        const container = new TabContentContainer({
+            terminal_settings: this.terminal_settings,
+            menus: this.menus,
+        });
+
         const page = new TerminalPage({
             terminal_settings: this.terminal_settings,
             terminal_menu: this.menus.get_object('terminal-popup'),
@@ -409,7 +356,9 @@ export const Notebook = GObject.registerClass({
             command: properties['command'] ?? this.get_command_from_settings(),
         });
 
-        this.insert_page(page, page.tab_label, position);
+        container.set_terminal(page);
+
+        this.insert_page(container, container.tab_label, position);
         return page;
     }
 
@@ -480,6 +429,10 @@ export const Notebook = GObject.registerClass({
         return this._current_child;
     }
 
+    get current_terminal() {
+        return this._current_child?.get_active_terminal() ?? null;
+    }
+
     get current_title() {
         return this.current_child?.title ?? null;
     }
@@ -489,11 +442,13 @@ export const Notebook = GObject.registerClass({
         const variant_dict_type = new GLib.VariantType('a{sv}');
         const pages = [];
 
-        for (const page of this.get_children()) {
+        for (const container of this.get_children()) {
             try {
-                pages.push(page.serialize_state());
+                const data = container.serialize_state();
+                if (data)
+                    pages.push(data);
             } catch (ex) {
-                logError(ex, "Can't serialize terminal state");
+                logError(ex, "Can't serialize tab state");
             }
         }
 
@@ -511,19 +466,21 @@ export const Notebook = GObject.registerClass({
 
         for (const page_serialized of pages) {
             try {
-                const page = TerminalPage.deserialize_state(page_serialized, {
-                    terminal_settings: this.terminal_settings,
-                    terminal_menu: this.menus.get_object('terminal-popup'),
-                    tab_menu: this.menus.get_object('tab-popup'),
-                    visible: true,
-                });
+                const container = TabContentContainer.deserialize_state(
+                    page_serialized,
+                    this.terminal_settings,
+                    this.menus
+                );
 
-                this.append_page(page, page.tab_label);
+                this.append_page(container, container.tab_label);
 
-                if (!page.banner_visible)
-                    page.spawn();
+                // Spawn terminals that need it
+                for (const t of container.get_all_terminals()) {
+                    if (!t.banner_visible)
+                        t.spawn();
+                }
             } catch (ex) {
-                logError(ex, "Can't restore terminal");
+                logError(ex, "Can't restore tab");
             }
         }
 
@@ -575,6 +532,11 @@ const NotebookMenu = GObject.registerClass({
                     page.disconnect(handler);
 
                 page_handlers.clear();
+
+                if (this._update_source !== null) {
+                    GLib.Source.remove(this._update_source);
+                    this._update_source = null;
+                }
             }),
         ];
     }
@@ -582,7 +544,7 @@ const NotebookMenu = GObject.registerClass({
     _update() {
         const prev_length = this.get_n_items();
 
-        this._label = this.notebook.get_children().map(page => page.title);
+        this._label = this.notebook.get_children().map(child => child.title);
         this._target.length = this._label.length;
 
         this.items_changed(0, prev_length, this._label.length);

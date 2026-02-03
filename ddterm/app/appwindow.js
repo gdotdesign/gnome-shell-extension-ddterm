@@ -128,13 +128,6 @@ export const AppWindow = GObject.registerClass({
             GObject.ParamFlags.READABLE,
             false
         ),
-        'split-layout': GObject.ParamSpec.string(
-            'split-layout',
-            null,
-            null,
-            GObject.ParamFlags.READABLE,
-            'no-split'
-        ),
     },
     Signals: {
         'session-update': {},
@@ -156,56 +149,20 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
 
         this.menus = Gtk.Builder.new_from_file(menu_path);
 
-        const grid = new Gtk.Grid({
+        this._grid = new Gtk.Grid({
             parent: this,
             visible: true,
         });
 
-        this.paned = new Gtk.Paned({
-            visible: true,
-            border_width: 0,
-            hexpand: true,
-            vexpand: true,
-        });
-        grid.attach(this.paned, 1, 1, 1, 1);
+        this._notebook = this._create_notebook();
+        this._notebook.visible = true;
+        this._notebook.hexpand = true;
+        this._notebook.vexpand = true;
+        this._grid.attach(this._notebook, 1, 1, 1, 1);
 
-        let window_title_binding = null;
-        this.paned.connect('set-focus-child', (paned, child) => {
-            window_title_binding?.unbind();
-            window_title_binding = child?.bind_property(
-                'current-title',
-                this,
-                'title',
-                GObject.BindingFlags.SYNC_CREATE
-            );
-
-            this.notify('active-notebook');
-        });
-
-        const notebook1 = this.create_notebook();
-        this.paned.pack1(notebook1, true, false);
-        this.paned.set_focus_child(notebook1);
-
-        const notebook2 = this.create_notebook();
-        this.paned.pack2(notebook2, true, false);
-
-        this.paned.connect('notify::orientation', () => this.notify('split-layout'));
-        this.connect('notify::is-split', () => this.notify('split-layout'));
-
-        const move_page = (child, src, dst) => {
-            const label = src.get_tab_label(child);
-            this.freeze_notify();
-
-            try {
-                src.remove(child);
-                dst.insert_page(child, label, -1);
-            } finally {
-                this.thaw_notify();
-            }
-        };
-
-        notebook1.connect('move-to-other-pane', (_, page) => move_page(page, notebook1, notebook2));
-        notebook2.connect('move-to-other-pane', (_, page) => move_page(page, notebook2, notebook1));
+        this._window_title_binding = null;
+        this._deserializing = false;
+        this._connect_focus_tracking();
 
         this.connect('notify::tab-label-width', this.update_tab_label_width.bind(this));
         this.connect('configure-event', this.update_tab_label_width.bind(this));
@@ -221,7 +178,7 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
         const add_resize_box = (edge, x, y, orientation) => {
             const box = make_resizer(orientation);
             box.connect('button-press-event', this.start_resizing.bind(this, edge));
-            grid.attach(box, x, y, 1, 1);
+            this._grid.attach(box, x, y, 1, 1);
 
             const update_visible = () => {
                 box.visible = this.resize_handle && this.resize_edge === edge;
@@ -288,18 +245,22 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
                 this.adjust_double_setting('background-opacity', OPACITY_MOD);
             },
             'split-position-inc': () => {
-                const step = (this.paned.max_position - this.paned.min_position) / 10;
-                this.paned.position = Math.min(this.paned.position + step, this.paned.max_position);
+                this._current_tab_container()?.adjust_split_position(0.1);
             },
             'split-position-dec': () => {
-                const step = (this.paned.max_position - this.paned.min_position) / 10;
-                this.paned.position = Math.max(this.paned.position - step, this.paned.min_position);
+                this._current_tab_container()?.adjust_split_position(-0.1);
             },
             'focus-other-pane': () => {
-                if (this.active_notebook === notebook1)
-                    notebook2.grab_focus();
-                else
-                    notebook1.grab_focus();
+                this._current_tab_container()?.focus_adjacent_terminal(1);
+            },
+            'focus-next-pane': () => {
+                this._current_tab_container()?.focus_adjacent_terminal(1);
+            },
+            'focus-prev-pane': () => {
+                this._current_tab_container()?.focus_adjacent_terminal(-1);
+            },
+            'close-pane': () => {
+                this._current_tab_container()?.close_active_terminal();
             },
         };
 
@@ -309,7 +270,8 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
             this.add_action(action);
         }
 
-        ['split-position-inc', 'split-position-dec', 'focus-other-pane'].map(
+        ['split-position-inc', 'split-position-dec', 'focus-other-pane',
+            'focus-next-pane', 'focus-prev-pane', 'close-pane'].map(
             key => this.lookup_action(key)
         ).forEach(action => {
             this.bind_property('is-split', action, 'enabled', GObject.BindingFlags.SYNC_CREATE);
@@ -337,16 +299,11 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
         );
 
         this.connect('notify::tab-show-shortcuts', () => this.update_show_shortcuts());
-        this.connect('notify::active-notebook', () => this.update_show_shortcuts());
         this.update_show_shortcuts();
 
         this.connect('notify::is-empty', () => {
             if (this.is_empty)
                 this.close();
-        });
-
-        this.connect('notify::split-orientation', () => {
-            this.emit('session-update');
         });
 
         this._hide_on_close();
@@ -394,7 +351,32 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
         this.sync_size_with_extension();
     }
 
-    create_notebook() {
+    _connect_focus_tracking() {
+        this._notebook.connect('switch-page', () => {
+            this._update_window_title();
+            this._notify_structure_changed();
+        });
+
+        this._notebook.connect('set-focus-child', () => {
+            this._update_window_title();
+        });
+
+        this._update_window_title();
+    }
+
+    _update_window_title() {
+        this._window_title_binding?.unbind();
+        this._window_title_binding = null;
+
+        this._window_title_binding = this._notebook.bind_property(
+            'current-title',
+            this,
+            'title',
+            GObject.BindingFlags.SYNC_CREATE
+        );
+    }
+
+    _create_notebook() {
         const notebook = new Notebook({
             terminal_settings: this.terminal_settings,
             scrollable: true,
@@ -402,50 +384,17 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
             menus: this.menus,
         });
 
-        const update_notebook_visibility = () => {
-            notebook.visible = notebook.get_n_pages() > 0;
-
-            if (!notebook.get_visible())
-                this.grab_focus();
-        };
-
-        notebook.connect('page-added', update_notebook_visibility);
-        notebook.connect('page-removed', update_notebook_visibility);
-
-        notebook.connect('notify::visible', () => {
-            this.freeze_notify();
-            this.notify('is-empty');
-            this.notify('is-split');
-            this.thaw_notify();
+        notebook.connect('page-added', () => {
+            if (!this._deserializing)
+                this._notify_structure_changed();
         });
 
-        notebook.connect('split-layout', (_, page, mode) => {
-            if (mode === 'no-split') {
-                this.reset_layout();
-                return;
-            }
-
-            this.paned.orientation =
-                mode === 'vertical-split' ? Gtk.Orientation.HORIZONTAL : Gtk.Orientation.VERTICAL;
-
-            if (this.is_split)
+        notebook.connect('page-removed', () => {
+            if (this._deserializing)
                 return;
 
-            if (notebook.get_n_pages() > 1) {
-                notebook.emit('move-to-other-pane', page);
-            } else {
-                const new_page = notebook.new_page();
-                notebook.emit('move-to-other-pane', new_page);
-                new_page.spawn();
-            }
+            this._notify_structure_changed();
         });
-
-        this.bind_property(
-            'split-layout',
-            notebook,
-            'split-layout',
-            GObject.BindingFlags.SYNC_CREATE
-        );
 
         this.settings.bind(
             'new-tab-button',
@@ -515,6 +464,19 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
         });
 
         return notebook;
+    }
+
+    _notify_structure_changed() {
+        this.freeze_notify();
+        this.notify('is-empty');
+        this.notify('is-split');
+        this.notify('active-notebook');
+        this.thaw_notify();
+        this.emit('session-update');
+    }
+
+    _current_tab_container() {
+        return this._notebook.current_child ?? null;
     }
 
     setup_draw_handler() {
@@ -627,56 +589,20 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
         const [width] = this.get_size();
         const tab_label_width = Math.floor(this.tab_label_width * width);
 
-        this.paned.foreach(child => {
-            child.tab_label_width = tab_label_width;
-        });
+        this._notebook.tab_label_width = tab_label_width;
     }
 
     get active_notebook() {
-        return this.paned.get_focus_child();
+        return this._notebook;
     }
 
     get is_empty() {
-        return this.paned.get_children().every(nb => !nb.get_visible());
+        return this._notebook.get_n_pages() === 0;
     }
 
     get is_split() {
-        return this.paned.get_children().every(nb => nb.get_visible());
-    }
-
-    get split_layout() {
-        if (!this.is_split)
-            return 'no-split';
-
-        if (this.paned.orientation === Gtk.Orientation.HORIZONTAL)
-            return 'vertical-split';
-
-        return 'horizontal-split';
-    }
-
-    reset_layout() {
-        if (!this.is_split)
-            return;
-
-        const dst = this.paned.get_child1();
-        const src = this.paned.get_child2();
-        const current_page = this.active_notebook?.current_child;
-
-        this.freeze_notify();
-
-        try {
-            for (const child of src.get_children()) {
-                const label = src.get_tab_label(child);
-
-                src.remove(child);
-                dst.insert_page(child, label, -1);
-            }
-
-            if (current_page)
-                dst.set_current_page(dst.page_num(current_page));
-        } finally {
-            this.thaw_notify();
-        }
+        const container = this._current_tab_container();
+        return container?.is_split ?? false;
     }
 
     update_window_pos() {
@@ -686,23 +612,11 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
     }
 
     update_show_shortcuts() {
-        this.paned.foreach(child => {
-            child.tab_show_shortcuts = this.tab_show_shortcuts && child === this.active_notebook;
-        });
+        this._notebook.tab_show_shortcuts = this.tab_show_shortcuts;
     }
 
     vfunc_grab_focus() {
-        if (this.active_notebook?.get_visible()) {
-            this.active_notebook.grab_focus();
-            return;
-        }
-
-        for (const notebook of this.paned.get_children()) {
-            if (notebook.get_visible()) {
-                notebook.grab_focus();
-                return;
-            }
-        }
+        this._notebook.grab_focus();
     }
 
     serialize_state() {
@@ -710,51 +624,71 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
             return null;
 
         const properties = GLib.VariantDict.new(null);
-
-        properties.insert_value(
-            'split-orientation',
-            GLib.Variant.new_int32(this.paned.orientation)
-        );
-
-        if (this.paned.position_set && this.is_split) {
-            const position_rel =
-                this.paned.position / (this.paned.max_position - this.paned.min_position);
-
-            properties.insert_value(
-                'split-position',
-                GLib.Variant.new_double(position_rel)
-            );
-        }
-
-        properties.insert_value('notebook1', this.paned.get_child1().serialize_state());
-        properties.insert_value('notebook2', this.paned.get_child2().serialize_state());
-
+        properties.insert_value('notebook1', this._notebook.serialize_state());
         return properties.end();
     }
 
     deserialize_state(variant) {
-        const variant_dict_type = new GLib.VariantType('a{sv}');
+        this._deserializing = true;
+
+        try {
+            this._deserialize_state_impl(variant);
+        } finally {
+            this._deserializing = false;
+        }
+
+        this._notify_structure_changed();
+    }
+
+    _deserialize_state_impl(variant) {
         const dict = GLib.VariantDict.new(variant);
-        const orientation = dict.lookup('split-orientation', 'i');
-        const position = dict.lookup('split-position', 'd');
+        const variant_dict_type = new GLib.VariantType('a{sv}');
+
+        // Check for new format first (notebook1 with pages array)
         const notebook1_data = dict.lookup_value('notebook1', variant_dict_type);
-        const notebook2_data = dict.lookup_value('notebook2', variant_dict_type);
 
-        if (orientation !== null)
-            this.paned.orientation = orientation;
+        if (notebook1_data) {
+            this._notebook.deserialize_state(notebook1_data);
 
-        if (notebook1_data)
-            this.paned.get_child1().deserialize_state(notebook1_data);
+            // Legacy: if there was a notebook2, flatten its tabs into the notebook
+            const notebook2_data = dict.lookup_value('notebook2', variant_dict_type);
+            if (notebook2_data)
+                this._notebook.deserialize_state(notebook2_data);
+        } else {
+            // Legacy tree format: type === 'split' at root level
+            const type = dict.lookup('type', 's');
+            if (type === 'split')
+                this._deserialize_legacy_split(variant);
+        }
+    }
 
-        if (notebook2_data)
-            this.paned.get_child2().deserialize_state(notebook2_data);
+    _deserialize_legacy_split(variant) {
+        const dict = GLib.VariantDict.new(variant);
+        const variant_dict_type = new GLib.VariantType('a{sv}');
+        const first_data = dict.lookup_value('first', variant_dict_type);
+        const second_data = dict.lookup_value('second', variant_dict_type);
 
-        if (position !== null)
-            this.paned.position = (this.paned.max_position - this.paned.min_position) * position;
+        if (first_data)
+            this._deserialize_legacy_node(first_data);
+
+        if (second_data)
+            this._deserialize_legacy_node(second_data);
+    }
+
+    _deserialize_legacy_node(variant) {
+        const dict = GLib.VariantDict.new(variant);
+        const type = dict.lookup('type', 's');
+
+        if (type === 'split') {
+            this._deserialize_legacy_split(variant);
+        } else if (type === 'notebook') {
+            // Old format: notebook state (pages, current-page) is in the same variant
+            this._notebook.deserialize_state(variant);
+        }
     }
 
     ensure_terminal() {
         if (this.is_empty)
-            this.active_notebook.new_page().spawn();
+            this._notebook.new_page().spawn();
     }
 });

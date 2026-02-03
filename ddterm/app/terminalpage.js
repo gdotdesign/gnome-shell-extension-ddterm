@@ -67,13 +67,6 @@ export const TerminalPage = GObject.registerClass({
             GObject.ParamFlags.READWRITE | GObject.ParamFlags.EXPLICIT_NOTIFY,
             false
         ),
-        'split-layout': GObject.ParamSpec.string(
-            'split-layout',
-            null,
-            null,
-            GObject.ParamFlags.READWRITE | GObject.ParamFlags.EXPLICIT_NOTIFY,
-            'no-split'
-        ),
         'banner-label': GObject.ParamSpec.string(
             'banner-label',
             null,
@@ -102,9 +95,10 @@ export const TerminalPage = GObject.registerClass({
         'new-tab-after-request': {},
         'move-prev-request': {},
         'move-next-request': {},
-        'split-layout-request': {
-            param_types: [String],
-        },
+        'split-horizontal-request': {},
+        'split-vertical-request': {},
+        'unsplit-request': {},
+        'close-pane-request': {},
         'move-to-other-pane-request': {},
         'session-update': {},
     },
@@ -272,23 +266,23 @@ export const TerminalPage = GObject.registerClass({
         move_next_action.connect('activate', () => this.emit('move-next-request'));
         page_actions.add_action(move_next_action);
 
-        const split_layout_action = new Gio.SimpleAction({
-            name: 'split-layout',
-            parameter_type: new GLib.VariantType('s'),
-            state: GLib.Variant.new_string(this.split_layout),
-        });
-        this.connect('notify::split-layout', () => {
-            split_layout_action.state = GLib.Variant.new_string(this.split_layout);
-        });
-        split_layout_action.connect('change-state', (_, value) => {
-            this.emit('split-layout-request', value.unpack());
-        });
-        split_layout_action.set_state_hint(new GLib.Variant('as', [
-            'no-split',
-            'horizontal-split',
-            'vertical-split',
-        ]));
-        page_actions.add_action(split_layout_action);
+        const split_h_action = new Gio.SimpleAction({ name: 'split-horizontal' });
+        split_h_action.connect('activate', () => this.emit('split-horizontal-request'));
+        page_actions.add_action(split_h_action);
+
+        const split_v_action = new Gio.SimpleAction({ name: 'split-vertical' });
+        split_v_action.connect('activate', () => this.emit('split-vertical-request'));
+        page_actions.add_action(split_v_action);
+
+        const unsplit_action = new Gio.SimpleAction({ name: 'unsplit', enabled: false });
+        unsplit_action.connect('activate', () => this.emit('unsplit-request'));
+        page_actions.add_action(unsplit_action);
+        this._unsplit_action = unsplit_action;
+
+        const close_pane_action = new Gio.SimpleAction({ name: 'close-pane', enabled: false });
+        close_pane_action.connect('activate', () => this.emit('close-pane-request'));
+        page_actions.add_action(close_pane_action);
+        this._close_pane_action = close_pane_action;
 
         const move_to_other_pane_action = new Gio.SimpleAction({ name: 'move-to-other-pane' });
         move_to_other_pane_action.connect('activate', () => {
@@ -503,6 +497,11 @@ export const TerminalPage = GObject.registerClass({
 
     get_cwd() {
         return this.terminal.get_cwd();
+    }
+
+    set_is_split(value) {
+        this._unsplit_action.enabled = value;
+        this._close_pane_action.enabled = value;
     }
 
     set_exit_status_banner(status) {
