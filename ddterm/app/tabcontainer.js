@@ -62,6 +62,7 @@ export const TabContentContainer = GObject.registerClass({
         this._restructuring = false;
         this._collapse_idle = null;
         this._destroyed = false;
+        this._terminal_handlers = new Map();
 
         this.connect('destroy', () => {
             this._destroyed = true;
@@ -147,52 +148,59 @@ export const TabContentContainer = GObject.registerClass({
     }
 
     _connect_terminal(page) {
-        page.connect('split-horizontal-request', () => {
-            this.split(page, Gtk.Orientation.HORIZONTAL);
-        });
+        const handlers = [
+            page.connect('split-horizontal-request', () => {
+                this.split(page, Gtk.Orientation.HORIZONTAL);
+            }),
+            page.connect('split-vertical-request', () => {
+                this.split(page, Gtk.Orientation.VERTICAL);
+            }),
+            page.connect('unsplit-request', () => {
+                this.unsplit();
+            }),
+            page.connect('close-pane-request', () => {
+                this.close_active_terminal();
+            }),
+            page.connect('move-to-other-pane-request', () => {
+                this._handle_move_to_other_pane(page);
+            }),
+            page.connect('session-update', () => {
+                this.emit('session-update');
+            }),
+            page.connect('new-tab-before-request', () => {
+                this.emit('new-tab-before-request');
+            }),
+            page.connect('new-tab-after-request', () => {
+                this.emit('new-tab-after-request');
+            }),
+            page.connect('move-prev-request', () => {
+                this.emit('move-prev-request');
+            }),
+            page.connect('move-next-request', () => {
+                this.emit('move-next-request');
+            }),
+        ];
 
-        page.connect('split-vertical-request', () => {
-            this.split(page, Gtk.Orientation.VERTICAL);
-        });
-
-        page.connect('unsplit-request', () => {
-            this.unsplit();
-        });
-
-        page.connect('close-pane-request', () => {
-            this.close_active_terminal();
-        });
-
-        page.connect('move-to-other-pane-request', () => {
-            this._handle_move_to_other_pane(page);
-        });
-
-        page.connect('session-update', () => {
-            this.emit('session-update');
-        });
-
-        page.connect('new-tab-before-request', () => {
-            this.emit('new-tab-before-request');
-        });
-
-        page.connect('new-tab-after-request', () => {
-            this.emit('new-tab-after-request');
-        });
-
-        page.connect('move-prev-request', () => {
-            this.emit('move-prev-request');
-        });
-
-        page.connect('move-next-request', () => {
-            this.emit('move-next-request');
-        });
+        this._terminal_handlers.set(page, handlers);
 
         page.connect('destroy', () => {
+            this._disconnect_terminal(page);
+
             if (this._restructuring)
                 return;
 
             this._on_terminal_destroyed(page);
         });
+    }
+
+    _disconnect_terminal(page) {
+        const handlers = this._terminal_handlers.get(page);
+        if (handlers) {
+            for (const id of handlers)
+                page.disconnect(id);
+
+            this._terminal_handlers.delete(page);
+        }
     }
 
     _on_terminal_destroyed(_page) {
@@ -475,7 +483,7 @@ export const TabContentContainer = GObject.registerClass({
         const target = parent || this._content;
 
         if (target instanceof SplitContainer)
-            target.split_position = target.split_position + delta;
+            target.split_position += delta;
     }
 
     focus_adjacent_terminal(direction) {
@@ -530,11 +538,10 @@ export const TabContentContainer = GObject.registerClass({
     _update_active_terminal() {
         let terminal = null;
 
-        if (this._content instanceof TerminalPage) {
+        if (this._content instanceof TerminalPage)
             terminal = this._content;
-        } else if (this._content instanceof SplitContainer) {
+        else if (this._content instanceof SplitContainer)
             terminal = this._content.active_terminal;
-        }
 
         this._set_active_terminal(terminal);
     }
