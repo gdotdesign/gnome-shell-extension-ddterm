@@ -164,6 +164,11 @@ class DDTermAppWindow extends Gtk.ApplicationWindow {
         this._deserializing = false;
         this._connect_focus_tracking();
 
+        this.connect('destroy', () => {
+            this._window_title_binding?.unbind();
+            this._window_title_binding = null;
+        });
+
         this.connect('notify::tab-label-width', this.update_tab_label_width.bind(this));
         this.connect('configure-event', this.update_tab_label_width.bind(this));
         this.update_tab_label_width();

@@ -36,6 +36,7 @@ export const SplitContainer = GObject.registerClass({
         this._split_position = 0.5;
         this._active_child = null;
         this._updating_position = false;
+        this._position_initialized = false;
         this._last_alloc_size = -1;
 
         this.connect('set-focus-child', this._on_focus_child_change.bind(this));
@@ -111,7 +112,7 @@ export const SplitContainer = GObject.registerClass({
     }
 
     _on_paned_position_changed() {
-        if (this._updating_position)
+        if (this._updating_position || !this._position_initialized)
             return;
 
         const range = this.max_position - this.min_position;
@@ -138,6 +139,7 @@ export const SplitContainer = GObject.registerClass({
             this.set_position(pixel_pos);
         } finally {
             this._updating_position = false;
+            this._position_initialized = true;
         }
     }
 

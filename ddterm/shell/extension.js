@@ -446,7 +446,9 @@ class EnabledExtension {
         });
 
         this.window_manager.logger = this.logger;
-        this.window_manager.connect('hide-request', () => this.app_control.hide(false));
+        this.window_manager.connect('hide-request', () => {
+            this.app_control.hide(false).catch(e => this.logger?.error(e));
+        });
     }
 
     get logger() {
