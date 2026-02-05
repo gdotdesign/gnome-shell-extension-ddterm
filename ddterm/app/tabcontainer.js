@@ -179,18 +179,17 @@ export const TabContentContainer = GObject.registerClass({
             page.connect('move-next-request', () => {
                 this.emit('move-next-request');
             }),
+            page.connect('destroy', () => {
+                this._disconnect_terminal(page);
+
+                if (this._restructuring)
+                    return;
+
+                this._on_terminal_destroyed(page);
+            }),
         ];
 
         this._terminal_handlers.set(page, handlers);
-
-        page.connect('destroy', () => {
-            this._disconnect_terminal(page);
-
-            if (this._restructuring)
-                return;
-
-            this._on_terminal_destroyed(page);
-        });
     }
 
     _disconnect_terminal(page) {

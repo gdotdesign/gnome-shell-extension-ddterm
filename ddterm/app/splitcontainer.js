@@ -6,12 +6,14 @@ import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk';
 
+import { TerminalPage } from './terminalpage.js';
+
 function _is_split_container(widget) {
     return widget instanceof SplitContainer;
 }
 
 function _is_terminal(widget) {
-    return !_is_split_container(widget) && widget instanceof Gtk.Box;
+    return widget instanceof TerminalPage;
 }
 
 export const SplitContainer = GObject.registerClass({
@@ -38,10 +40,12 @@ export const SplitContainer = GObject.registerClass({
         this._updating_position = false;
         this._position_initialized = false;
         this._last_alloc_size = -1;
+        this._position_idle = null;
 
         this.connect('set-focus-child', this._on_focus_child_change.bind(this));
         this.connect('notify::position', this._on_paned_position_changed.bind(this));
         this.connect('size-allocate', this._on_size_allocate.bind(this));
+        this.connect('destroy', this._on_destroy.bind(this));
     }
 
     get first_child() {
@@ -89,6 +93,13 @@ export const SplitContainer = GObject.registerClass({
 
     _on_focus_child_change(_paned, child) {
         this._active_child = child;
+    }
+
+    _on_destroy() {
+        if (this._position_idle) {
+            GLib.Source.remove(this._position_idle);
+            this._position_idle = null;
+        }
     }
 
     _get_first_terminal() {
@@ -274,7 +285,8 @@ export const SplitContainer = GObject.registerClass({
             split._split_position = position;
 
         // Apply position after widget gets its allocation
-        GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+        split._position_idle = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            split._position_idle = null;
             split._apply_split_position();
             return GLib.SOURCE_REMOVE;
         });

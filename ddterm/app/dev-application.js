@@ -19,7 +19,9 @@ export const Application = GObject.registerClass({
             super.startup();
         } catch (ex) {
             // Ignore errors from DisplayConfig requiring Mutter
-            if (!ex.message.includes('org.gnome.Mutter.DisplayConfig'))
+            const isMutterError = ex.message?.includes('org.gnome.Mutter') ||
+                ex.message?.includes('DisplayConfig');
+            if (!isMutterError)
                 throw ex;
         }
 
