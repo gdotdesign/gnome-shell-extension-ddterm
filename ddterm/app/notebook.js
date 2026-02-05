@@ -276,6 +276,22 @@ export const Notebook = GObject.registerClass({
             child.connect('session-update', () => {
                 this.emit('session-update');
             }),
+            child.connect('new-tab-before-request', () => {
+                this.new_page(this.page_num(child)).spawn();
+            }),
+            child.connect('new-tab-after-request', () => {
+                this.new_page(this.page_num(child) + 1).spawn();
+            }),
+            child.connect('move-prev-request', () => {
+                const current = this.page_num(child);
+                const n_pages = this.get_n_pages();
+                this.reorder_child(child, (n_pages + current - 1) % n_pages);
+            }),
+            child.connect('move-next-request', () => {
+                const current = this.page_num(child);
+                const n_pages = this.get_n_pages();
+                this.reorder_child(child, (current + 1) % n_pages);
+            }),
         ];
 
         const label = this.get_tab_label(child);

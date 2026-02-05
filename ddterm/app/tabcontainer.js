@@ -44,6 +44,10 @@ export const TabContentContainer = GObject.registerClass({
     },
     Signals: {
         'session-update': {},
+        'new-tab-before-request': {},
+        'new-tab-after-request': {},
+        'move-prev-request': {},
+        'move-next-request': {},
     },
 }, class DDTermTabContentContainer extends Gtk.Box {
     _init(params) {
@@ -165,6 +169,22 @@ export const TabContentContainer = GObject.registerClass({
 
         page.connect('session-update', () => {
             this.emit('session-update');
+        });
+
+        page.connect('new-tab-before-request', () => {
+            this.emit('new-tab-before-request');
+        });
+
+        page.connect('new-tab-after-request', () => {
+            this.emit('new-tab-after-request');
+        });
+
+        page.connect('move-prev-request', () => {
+            this.emit('move-prev-request');
+        });
+
+        page.connect('move-next-request', () => {
+            this.emit('move-next-request');
         });
 
         page.connect('destroy', () => {
@@ -535,6 +555,9 @@ export const TabContentContainer = GObject.registerClass({
                 'label',
                 GObject.BindingFlags.SYNC_CREATE
             );
+            this.tab_label.insert_action_group('page', terminal.get_action_group('page'));
+        } else {
+            this.tab_label.insert_action_group('page', null);
         }
 
         this.notify('title');
